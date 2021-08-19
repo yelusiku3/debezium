@@ -802,6 +802,7 @@ public class MySqlConnectorConfig extends HistorizedRelationalDatabaseConnectorC
      * The database history class is hidden in the {@link #configDef()} since that is designed to work with a user interface,
      * and in these situations using Kafka is the only way to go.
      */
+    //DatabaseHistory 默认使用 KafkaDatabaseHistory
     public static final Field DATABASE_HISTORY = Field.create("database.history")
             .withDisplayName("Database history class")
             .withType(Type.CLASS)

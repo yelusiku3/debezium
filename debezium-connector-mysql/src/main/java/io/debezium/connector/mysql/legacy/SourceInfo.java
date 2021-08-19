@@ -192,6 +192,7 @@ public final class SourceInfo extends BaseSourceInfo {
      * @param positionOfFirstEvent the position in the binary log file to begin processing
      */
     public void setBinlogStartPoint(String binlogFilename, long positionOfFirstEvent) {
+        //todo 为什么此边current与 restart 设置一直的值？
         if (binlogFilename != null) {
             this.currentBinlogFilename = binlogFilename;
             this.restartBinlogFilename = binlogFilename;

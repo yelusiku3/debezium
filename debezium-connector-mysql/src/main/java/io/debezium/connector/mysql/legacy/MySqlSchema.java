@@ -73,8 +73,10 @@ public class MySqlSchema extends RelationalDatabaseSchema {
     private final static Logger logger = LoggerFactory.getLogger(MySqlSchema.class);
 
     private final Set<String> ignoredQueryStatements = Collect.unmodifiableSet("BEGIN", "END", "FLUSH PRIVILEGES");
+    //ddl解析器,mysql、oracle都具备自身
     private final DdlParser ddlParser;
     private final Filters filters;
+    //维护订阅数据库相关数据结构方式
     private final DatabaseHistory dbHistory;
     private final DdlChanges ddlChanges;
     private final HistoryRecordComparator historyComparator;
@@ -318,6 +320,7 @@ public class MySqlSchema extends RelationalDatabaseSchema {
      * @return {@code true} if changes were made to the database schema, or {@code false} if the DDL statements had no
      *         effect on the database schema
      */
+    //将相关ddl语句存入DataBaseHistory实现类（默认kafka）
     public boolean applyDdl(SourceInfo source, String databaseName, String ddlStatements,
                             DatabaseStatementStringConsumer statementConsumer) {
         Set<TableId> changes;
@@ -378,6 +381,7 @@ public class MySqlSchema extends RelationalDatabaseSchema {
             // - all DDLs if configured
             // - or global SET variables
             // - or DDLs for monitored objects
+            //记录ddl相关配置至dbHistory 实现类
             if (!storeOnlyCapturedTablesDdl || isGlobalSetVariableStatement(ddlStatements, databaseName) || changes.stream().anyMatch(filters().tableFilter()::test)) {
                 dbHistory.record(source.partition(), source.offset(), databaseName, ddlStatements);
             }

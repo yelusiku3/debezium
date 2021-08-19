@@ -19,6 +19,7 @@ import io.debezium.relational.Table;
  *
  * @author yangjie
  */
+
 public class MysqlTextProtocolFieldReader extends AbstractMysqlFieldReader {
 
     /**

@@ -137,9 +137,11 @@ public abstract class AbstractReader implements Reader {
             // this to happen if enough records are added again between here and the call to disconnect(); protecting
             // against it seems not worth though it as shouldn't happen for any practical queue size
             List<SourceRecord> unsent = new ArrayList<>();
+            //此边stop的停止通过将队列中的所有的元素移出放入unsent的方式进行
             records.drainTo(unsent);
             logger.info("Discarding {} unsent record(s) due to the connector shutting down", unsent.size());
             doStop();
+            //此边标记将被全量
             running.set(false);
         }
         finally {

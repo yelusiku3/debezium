@@ -205,6 +205,7 @@ public final class MySqlTaskContext extends CdcSourceTaskContext {
         return config.getLong(MySqlConnectorConfig.SERVER_ID);
     }
 
+    // 获取大表默认数据量数值
     public long rowCountForLargeTable() {
         return config.getLong(MySqlConnectorConfig.ROW_COUNT_FOR_STREAMING_RESULT_SETS);
     }

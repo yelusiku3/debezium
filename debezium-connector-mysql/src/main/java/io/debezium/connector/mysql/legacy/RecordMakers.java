@@ -225,6 +225,7 @@ public class RecordMakers {
             public int read(SourceInfo source, Object[] row, int rowNumber, int numberOfRows, BitSet includedColumns, Instant ts,
                             BlockingConsumer<SourceRecord> consumer)
                     throws InterruptedException {
+                //转变为 Kafka Connect key
                 Struct key = tableSchema.keyFromColumnData(row);
                 Struct value = tableSchema.valueFromColumnData(row);
                 if (value != null || key != null) {

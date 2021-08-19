@@ -145,6 +145,8 @@ public class SnapshotReader extends AbstractReader {
 
     /**
      * Perform the snapshot using the same logic as the "mysqldump" utility.
+     * //参照 mysqldump 作成的此边的execute
+     * //跨多个class通过 BlokingQueue 作为任务传输，包含了kafka操作前的最后一步控制
      */
     protected void execute() {
         context.configureLoggingContext("snapshot");
@@ -192,6 +194,7 @@ public class SnapshotReader extends AbstractReader {
             logger.info("Step 0: disabling autocommit, enabling repeatable read transactions, and setting lock wait timeout to {}",
                     snapshotLockTimeout);
             mysql.setAutoCommit(false);
+            //设置mysql的隔离级别为RR
             sql.set("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ");
             mysql.executeWithoutCommitting(sql.get());
             sql.set("SET SESSION lock_wait_timeout=" + snapshotLockTimeout);
@@ -204,7 +207,8 @@ public class SnapshotReader extends AbstractReader {
                 logger.warn("Unable to set innodb_lock_wait_timeout", e);
             }
 
-            // Generate the DDL statements that set the charset-related system variables ...
+            // Generate the DDL statements that set the charset-related system variables ..
+            // 数据库内字符集变量也会被保存
             Map<String, String> systemVariables = connectionContext.readMySqlCharsetSystemVariables();
             String setSystemVariablesStatement = connectionContext.setStatementFor(systemVariables);
             AtomicBoolean interrupted = new AtomicBoolean(false);
@@ -222,12 +226,14 @@ public class SnapshotReader extends AbstractReader {
                 if (!isRunning()) {
                     return;
                 }
+                //设置全局读锁
                 if (!snapshotLockingMode.equals(MySqlConnectorConfig.SnapshotLockingMode.NONE) && useGlobalLock) {
                     try {
                         logger.info("Step 1: flush and obtain global read lock to prevent writes to database");
                         sql.set(snapshotLockingMode.getLockStatement());
                         mysql.executeWithoutCommitting(sql.get());
                         lockAcquired = clock.currentTimeInMillis();
+                        //获得指标的全局锁
                         metrics.globalLockAcquired();
                         isLocked = true;
                     }
@@ -299,10 +305,12 @@ public class SnapshotReader extends AbstractReader {
                 final Filters createTableFilters = getCreateTableFilters(filters);
                 final Map<String, List<TableId>> createTablesMap = new HashMap<>();
                 final Set<String> readableDatabaseNames = new HashSet<>();
+                //获取库中所有表，进行筛选获取自身所需表
                 for (String dbName : databaseNames) {
                     try {
                         // MySQL sometimes considers some local files as databases (see DBZ-164),
                         // so we will simply try each one and ignore the problematic ones ...
+                        //因放入 mysql 的 data 文件夹内都会被认为一个数据库实例,故此边需要进行有效数据库的筛选
                         sql.set("SHOW FULL TABLES IN " + quote(dbName) + " where Table_Type = 'BASE TABLE'");
                         mysql.query(sql.get(), rs -> {
                             while (rs.next() && isRunning()) {
@@ -356,7 +364,7 @@ public class SnapshotReader extends AbstractReader {
                 capturedTableIds.sort(Comparator.comparing(tableIdsSorted::indexOf));
                 final Set<String> includedDatabaseNames = readableDatabaseNames.stream().filter(filters.databaseFilter()).collect(Collectors.toSet());
                 logger.info("\tsnapshot continuing with database(s): {}", includedDatabaseNames);
-
+                //如全局读锁，锁定失败则 isLocked 为 false，此边针对于所需表进行表级读锁设置
                 if (!isLocked) {
                     if (!snapshotLockingMode.equals(MySqlConnectorConfig.SnapshotLockingMode.NONE)) {
                         // ------------------------------------
@@ -382,6 +390,7 @@ public class SnapshotReader extends AbstractReader {
                             mysql.executeWithoutCommitting(sql.get());
                         }
                         lockAcquired = clock.currentTimeInMillis();
+                        //获得指标的全局锁
                         metrics.globalLockAcquired();
                         isLocked = true;
                         tableLocks = true;
@@ -399,7 +408,7 @@ public class SnapshotReader extends AbstractReader {
                 // ------
                 // Transform the current schema so that it reflects the *current* state of the MySQL server's contents.
                 // First, get the DROP TABLE and CREATE TABLE statement (with keys and constraint definitions) for our tables ...
-
+                //针对于订阅的数据库及其相关表生成drop、create相关语句，将其维护在内存 与 DataBaseHistory实现类内
                 try {
                     logger.info("Step {}: generating DROP and CREATE statements to reflect current database schemas:", step++);
                     schema.applyDdl(source, null, setSystemVariablesStatement, this::enqueueSchemaChanges);
@@ -453,6 +462,7 @@ public class SnapshotReader extends AbstractReader {
                             }
                         }
                     }
+                    //
                     context.makeRecord().regenerate();
                 }
                 // most likely, something went wrong while writing the history topic
@@ -464,6 +474,7 @@ public class SnapshotReader extends AbstractReader {
                 // ------
                 // STEP 7
                 // ------
+                // 全局读锁->解锁；表级读锁->不能解锁，打印原因
                 if (snapshotLockingMode.usesMinimalLocking() && isLocked) {
                     if (tableLocks) {
                         // We could not acquire a global read lock and instead had to obtain individual table-level read locks
@@ -471,10 +482,12 @@ public class SnapshotReader extends AbstractReader {
                         // would implicitly commit our active transaction, and this would break our consistent snapshot logic.
                         // Therefore, we cannot unlock the tables here!
                         // https://dev.mysql.com/doc/refman/5.7/en/flush.html
+                        //
                         logger.info("Step {}: tables were locked explicitly, but to get a consistent snapshot we cannot "
                                 + "release the locks until we've read all tables.", step++);
                     }
                     else {
+                        // 因后续通过 mvcc 快照中拿取对应数据，同时没有where条件操作，故此边 全局读锁 进行了释放。
                         // We are doing minimal blocking via a global read lock, so we should release the global read lock now.
                         // All subsequent SELECT should still use the MVCC snapshot obtained when we started our transaction
                         // (since we started it "...with consistent snapshot"). So, since we're only doing very simple SELECT
@@ -510,6 +523,7 @@ public class SnapshotReader extends AbstractReader {
                     int counter = 0;
                     int completedCounter = 0;
                     long largeTableCount = context.rowCountForLargeTable();
+                    //capturedTableIds 存放需要进行全量拉取的表
                     Iterator<TableId> tableIdIter = capturedTableIds.iterator();
                     while (tableIdIter.hasNext()) {
                         TableId tableId = tableIdIter.next();
@@ -519,6 +533,7 @@ public class SnapshotReader extends AbstractReader {
                         }
 
                         // Obtain a record maker for this table, which knows about the schema ...
+                        //生成 kafka 用 SourceRecord对象 的操作类实例
                         RecordsForTable recordMaker = context.makeRecord().forTable(tableId, null, bufferedRecordQueue);
                         if (recordMaker != null) {
 
@@ -528,18 +543,21 @@ public class SnapshotReader extends AbstractReader {
 
                             AtomicLong numRows = new AtomicLong(-1);
                             AtomicReference<String> rowCountStr = new AtomicReference<>("<unknown>");
+                            //默认设定采用流的方式采集数据
                             StatementFactory statementFactory = this::createStatementWithLargeResultSet;
                             if (largeTableCount > 0) {
                                 try {
                                     // Choose how we create statements based on the # of rows.
                                     // This is approximate and less accurate then COUNT(*),
                                     // but far more efficient for large InnoDB tables.
+                                    // 不通过count的方式进行精确统计，还是通过 show table status的方式获取 表包含数据的近似值。
                                     sql.set("SHOW TABLE STATUS LIKE '" + tableId.table() + "';");
                                     mysql.query(sql.get(), rs -> {
                                         if (rs.next()) {
                                             numRows.set(rs.getLong(5));
                                         }
                                     });
+                                    //非大量数据则使用批的方式
                                     if (numRows.get() <= largeTableCount) {
                                         statementFactory = this::createStatement;
                                     }
@@ -568,29 +586,39 @@ public class SnapshotReader extends AbstractReader {
                                         // The table is included in the connector's filters, so process all of the table records
                                         // ...
                                         final Table table = schema.tableFor(tableId);
+                                        //获取字段数
                                         final int numColumns = table.columns().size();
+                                        //数据保存每行数据
                                         final Object[] row = new Object[numColumns];
                                         while (rs.next()) {
                                             for (int i = 0, j = 1; i != numColumns; ++i, ++j) {
                                                 Column actualColumn = table.columns().get(i);
+                                                //通过二进制 或 文本方式进行的读取
                                                 row[i] = mysqlFieldReader.readField(rs, j, actualColumn, table);
                                             }
+                                            //将row的数据变为kafka所需数据结构（SourceRecord）
+                                            //对接 recordRowAsRead 方法，最终到io.debezium.connector.mysql.legacy.RecordMakers.Converter.read 进行转化
+                                            //因最终放 BlockingQueue 内，让 BlockingQueue 的消费者将对应数据 放入至 kafka内。
                                             recorder.recordRow(recordMaker, row, clock.currentTimeAsInstant()); // has no row number!
                                             rowNum.incrementAndGet();
+                                            //TODO 为什么在 %100==0 及 非运行情况下跳出? 作为手动快速停止采集的渠道？
                                             if (rowNum.get() % 100 == 0 && !isRunning()) {
                                                 // We've stopped running ...
                                                 break;
                                             }
+                                            //每10_000 作为一次阶段性跟踪
                                             if (rowNum.get() % 10_000 == 0) {
                                                 if (logger.isInfoEnabled()) {
                                                     long stop = clock.currentTimeInMillis();
                                                     logger.info("Step {}: - {} of {} rows scanned from table '{}' after {}",
                                                             stepNum, rowNum, rowCountStr, tableId, Strings.duration(stop - start));
                                                 }
+                                                //rowsScanned 最终调用  ConcurrentMap<String, Long> 的方式进行 记录 当前table采集的行数
                                                 metrics.rowsScanned(tableId, rowNum.get());
                                             }
                                         }
                                         totalRowCount.addAndGet(rowNum.get());
+                                        //跳出上一次的while之后，再次记录 当前table采集的行数
                                         if (isRunning()) {
                                             if (logger.isInfoEnabled()) {
                                                 long stop = clock.currentTimeInMillis();
@@ -601,6 +629,7 @@ public class SnapshotReader extends AbstractReader {
                                         }
                                     }
                                     catch (InterruptedException e) {
+                                        //出现异常，手动将当前线程尝试中断
                                         Thread.currentThread().interrupt();
                                         // We were not able to finish all rows in all tables ...
                                         logger.info("Step {}: Stopping the snapshot due to thread interruption", stepNum);
@@ -803,6 +832,7 @@ public class SnapshotReader extends AbstractReader {
         return filters.tableFilter().test(id) || !schema.isStoreOnlyCapturedTablesDdl();
     }
 
+    //todo 这边保存binlogPostition 与 binlogFileName 信息只落地在内存中吗？
     protected void readBinlogPosition(int step, SourceInfo source, JdbcConnection mysql, AtomicReference<String> sql) throws SQLException {
         if (context.isSchemaOnlyRecoverySnapshot()) {
             // We are in schema only recovery mode, use the existing binlog position
@@ -813,6 +843,7 @@ public class SnapshotReader extends AbstractReader {
             source.startSnapshot();
         }
         else {
+            //记录binlogPosition 与 binlogFileName
             logger.info("Step {}: read binlog position of MySQL primary server", step);
             String showMasterStmt = "SHOW MASTER STATUS";
             sql.set(showMasterStmt);
@@ -823,6 +854,7 @@ public class SnapshotReader extends AbstractReader {
                     source.setBinlogStartPoint(binlogFilename, binlogPosition);
                     if (rs.getMetaData().getColumnCount() > 4) {
                         // This column exists only in MySQL 5.6.5 or later ...
+                        // 已提交事务Id（gtid ）获取
                         String gtidSet = rs.getString(5); // GTID set, may be null, blank, or contain a GTID set
                         source.setCompletedGtidSet(gtidSet);
                         logger.info("\t using binlog '{}' at position '{}' and gtid '{}'", binlogFilename, binlogPosition,
@@ -886,6 +918,7 @@ public class SnapshotReader extends AbstractReader {
      * @return the statement; never null
      * @throws SQLException if there is a problem creating the statement
      */
+    //通过 jdbc流方式读取数据
     private Statement createStatementWithLargeResultSet(Connection connection) throws SQLException {
         int fetchSize = context.getConnectorConfig().getSnapshotFetchSize();
         Statement stmt = connection.createStatement(ResultSet.TYPE_FORWARD_ONLY, ResultSet.CONCUR_READ_ONLY);
@@ -893,6 +926,7 @@ public class SnapshotReader extends AbstractReader {
         return stmt;
     }
 
+    //通过 jdbc传统批方式读取
     private Statement createStatement(Connection connection) throws SQLException {
         return connection.createStatement();
     }
@@ -944,6 +978,7 @@ public class SnapshotReader extends AbstractReader {
      * @param record the record
      * @return the updated record
      */
+    // 主要目的替换 offset
     protected SourceRecord replaceOffsetAndSource(SourceRecord record) {
         if (record == null) {
             return null;
