@@ -99,6 +99,7 @@ public class LogMinerStreamingChangeEventSource implements StreamingChangeEventS
      * @param context
      *         change event source context
      */
+    //TODO 监控logMiner
     @Override
     public void execute(ChangeEventSourceContext context, OraclePartition partition, OracleOffsetContext offsetContext) {
         try {

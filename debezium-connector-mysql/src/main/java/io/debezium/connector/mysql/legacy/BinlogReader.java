@@ -439,6 +439,7 @@ public class BinlogReader extends AbstractReader {
                                 keepAliveThreadRunning = true;
                             }
                         }
+                        //阻塞一段时间
                         metronome.pause();
                     }
                 }
@@ -823,6 +824,7 @@ public class BinlogReader extends AbstractReader {
             logger.warn("Rollback statements cannot be handled without binlog buffering, the connector will fail. Please check '{}' to see how to enable buffering",
                     MySqlConnectorConfig.BUFFER_SIZE_FOR_BINLOG_READER.name());
         }
+        //此边将对应数据放入 Kafa
         context.dbSchema().applyDdl(context.source(), command.getDatabase(), command.getSql(), (dbName, tables, statements) -> {
             if (recordSchemaChangesInSourceRecords && recordMakers.schemaChanges(dbName, tables, statements, super::enqueueRecord) > 0) {
                 logger.debug("Recorded DDL statements for database '{}': {}", dbName, statements);

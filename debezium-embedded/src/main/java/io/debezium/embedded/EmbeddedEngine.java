@@ -808,6 +808,7 @@ public final class EmbeddedEngine implements DebeziumEngine<SourceRecord> {
                             try {
                                 if (changeRecords != null && !changeRecords.isEmpty()) {
                                     LOGGER.debug("Received {} records from the task", changeRecords.size());
+                                    //此边会调用 kafka connect 对应方法，对于数据进行传参操作
                                     changeRecords = changeRecords.stream()
                                             .map(transformations::transform)
                                             .filter(x -> x != null)

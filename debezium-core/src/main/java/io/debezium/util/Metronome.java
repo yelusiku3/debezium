@@ -43,6 +43,7 @@ public interface Metronome {
      * @return the new metronome; never null
      */
     public static Metronome sleeper(Duration period, Clock timeSystem) {
+        //目的在于sleep
         long periodInMillis = period.toMillis();
         return new Metronome() {
             private long next = timeSystem.currentTimeInMillis() + periodInMillis;
@@ -54,6 +55,7 @@ public interface Metronome {
                     if (next <= now) {
                         break;
                     }
+                    //实现sleep相关业务逻辑
                     Thread.sleep(next - now);
                 }
                 next = next + periodInMillis;
@@ -89,6 +91,7 @@ public interface Metronome {
             @Override
             public void pause() throws InterruptedException {
                 while (next > timeSystem.currentTimeInNanos()) {
+                    //阻塞当前线程，最长不超过 next - timeSystem.currentTimeInNanos()
                     LockSupport.parkNanos(next - timeSystem.currentTimeInNanos());
                     if (Thread.currentThread().isInterrupted()) {
                         throw new InterruptedException();

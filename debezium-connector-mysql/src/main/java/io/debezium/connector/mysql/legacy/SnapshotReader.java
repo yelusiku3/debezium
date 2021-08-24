@@ -194,7 +194,7 @@ public class SnapshotReader extends AbstractReader {
             logger.info("Step 0: disabling autocommit, enabling repeatable read transactions, and setting lock wait timeout to {}",
                     snapshotLockTimeout);
             mysql.setAutoCommit(false);
-            //设置mysql的隔离级别为RR
+            //将全局事务的隔离级别设置为RR
             sql.set("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ");
             mysql.executeWithoutCommitting(sql.get());
             sql.set("SET SESSION lock_wait_timeout=" + snapshotLockTimeout);
@@ -256,6 +256,7 @@ public class SnapshotReader extends AbstractReader {
                     return;
                 }
                 logger.info("Step 2: start transaction with consistent snapshot");
+                //开启一致性读事务，即在START TRANSACTION WITH CONSISTENT SNAPSHOT时开启了事务，而非START TRANSACTION 之后任务sql才算开启事务
                 sql.set("START TRANSACTION WITH CONSISTENT SNAPSHOT");
                 mysql.executeWithoutCommitting(sql.get());
                 isTxnStarted = true;
@@ -392,7 +393,9 @@ public class SnapshotReader extends AbstractReader {
                         lockAcquired = clock.currentTimeInMillis();
                         //获得指标的全局锁
                         metrics.globalLockAcquired();
+                        //锁定的标记
                         isLocked = true;
+                        //表级锁标记
                         tableLocks = true;
                     }
 
@@ -408,7 +411,7 @@ public class SnapshotReader extends AbstractReader {
                 // ------
                 // Transform the current schema so that it reflects the *current* state of the MySQL server's contents.
                 // First, get the DROP TABLE and CREATE TABLE statement (with keys and constraint definitions) for our tables ...
-                //针对于订阅的数据库及其相关表生成drop、create相关语句，将其维护在内存 与 DataBaseHistory实现类内
+                //针对于订阅的数据库及其相关表生成drop、create相关语句，将其维护在内存 与 DataBaseHistory实现类（诸如 KafkaDatabaseHistory ）内
                 try {
                     logger.info("Step {}: generating DROP and CREATE statements to reflect current database schemas:", step++);
                     schema.applyDdl(source, null, setSystemVariablesStatement, this::enqueueSchemaChanges);
@@ -458,6 +461,7 @@ public class SnapshotReader extends AbstractReader {
                                 readTableSchema(sql, mysql, schema, source, dbName, tableId);
                             }
                             else {
+                                //存入解锁之后的表的结构（基于快照）
                                 tablesToSnapshotSchemaAfterUnlock.add(tableId);
                             }
                         }
@@ -573,8 +577,9 @@ public class SnapshotReader extends AbstractReader {
                             long start = clock.currentTimeInMillis();
                             logger.info("Step {}: - scanning table '{}' ({} of {} tables)", step, tableId, ++counter, capturedTableIds.size());
 
+                            //如有过滤条件则在此边进行赋值操作
                             Map<TableId, String> selectOverrides = context.getConnectorConfig().getSnapshotSelectOverridesByTable();
-
+                            //如没有找到对应 tableId 采集所用sql，则使用默认 "SELECT * FROM " + quote(tableId)
                             String selectStatement = selectOverrides.getOrDefault(tableId, "SELECT * FROM " + quote(tableId));
                             logger.info("For table '{}' using select statement: '{}'", tableId, selectStatement);
                             sql.set(selectStatement);
@@ -597,8 +602,8 @@ public class SnapshotReader extends AbstractReader {
                                                 row[i] = mysqlFieldReader.readField(rs, j, actualColumn, table);
                                             }
                                             //将row的数据变为kafka所需数据结构（SourceRecord）
-                                            //对接 recordRowAsRead 方法，最终到io.debezium.connector.mysql.legacy.RecordMakers.Converter.read 进行转化
-                                            //因最终放 BlockingQueue 内，让 BlockingQueue 的消费者将对应数据 放入至 kafka内。
+                                            //对接 recordRowAsRead 方法，最终到 io.debezium.connector.mysql.legacy.RecordMakers.assign 的内部类 Converter.read 进行转化
+                                            //因最终放 BlockingQueue 内，让 BlockingQueue 的消费者将对应数据 放入至 指定地点（诸如：kafka）内。
                                             recorder.recordRow(recordMaker, row, clock.currentTimeAsInstant()); // has no row number!
                                             rowNum.incrementAndGet();
                                             //TODO 为什么在 %100==0 及 非运行情况下跳出? 作为手动快速停止采集的渠道？
@@ -648,6 +653,7 @@ public class SnapshotReader extends AbstractReader {
                     }
 
                     // See if we've been stopped or interrupted ...
+                    // 此边作为灵活控制第一部分，如需停止等都可再次控制
                     if (!isRunning() || interrupted.get()) {
                         return;
                     }
@@ -687,6 +693,7 @@ public class SnapshotReader extends AbstractReader {
                 // ------
                 // Either commit or roll back the transaction, BEFORE releasing the locks ...
                 if (isTxnStarted) {
+                    //如果出现异常进行相关回滚
                     if (interrupted.get() || !isRunning()) {
                         // We were interrupted or were stopped while reading the tables,
                         // so roll back the transaction and return immediately ...
@@ -737,6 +744,7 @@ public class SnapshotReader extends AbstractReader {
                             if (!isRunning()) {
                                 break;
                             }
+                            //TODO 为什么此边再次读取表的元数据 放入DataBaseHistory实现类？？
                             readTableSchema(sql, mysql, schema, source, tableId.catalog(), tableId);
                         }
                     }
@@ -978,7 +986,7 @@ public class SnapshotReader extends AbstractReader {
      * @param record the record
      * @return the updated record
      */
-    // 主要目的替换 offset
+    // 主要目的替换 offset,用于记录最终操作的offset
     protected SourceRecord replaceOffsetAndSource(SourceRecord record) {
         if (record == null) {
             return null;

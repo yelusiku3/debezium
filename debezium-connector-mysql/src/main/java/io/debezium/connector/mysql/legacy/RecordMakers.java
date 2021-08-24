@@ -221,6 +221,7 @@ public class RecordMakers {
         Integer partitionNum = null;
         Converter converter = new Converter() {
 
+            //全量拉取 与 BinlogReader 时都会使用
             @Override
             public int read(SourceInfo source, Object[] row, int rowNumber, int numberOfRows, BitSet includedColumns, Instant ts,
                             BlockingConsumer<SourceRecord> consumer)
@@ -236,12 +237,14 @@ public class RecordMakers {
                     Struct origin = source.struct();
                     SourceRecord record = new SourceRecord(partition, getSourceRecordOffset(offset), topicName, partitionNum,
                             keySchema, key, envelope.schema(), envelope.read(value, origin, ts));
+                    //注意此边 BlockingConsumer 实现有多种，诸如： 消费 BlockingQueue -> kafka，根据自身撰写的 consumer 进行控制
                     consumer.accept(record);
                     return 1;
                 }
                 return 0;
             }
 
+            //BinlogReader 时使用
             @Override
             public int insert(SourceInfo source, Object[] row, int rowNumber, int numberOfRows, BitSet includedColumns, Instant ts,
                               BlockingConsumer<SourceRecord> consumer)
@@ -255,6 +258,7 @@ public class RecordMakers {
                     Map<String, Object> offset = source.offsetForRow(rowNumber, numberOfRows);
                     source.tableEvent(id);
                     Struct origin = source.struct();
+                    //与read的区别在于此边的 envelope.create
                     SourceRecord record = new SourceRecord(partition, getSourceRecordOffset(offset), topicName, partitionNum,
                             keySchema, key, envelope.schema(), envelope.create(value, origin, ts));
                     consumer.accept(record);
@@ -263,6 +267,8 @@ public class RecordMakers {
                 return 0;
             }
 
+            //更新涉及，有则更新，无则插入的情况。
+            //BinlogReader 时使用
             @Override
             public int update(SourceInfo source, Object[] before, Object[] after, int rowNumber, int numberOfRows, BitSet includedColumns,
                               Instant ts,
@@ -320,6 +326,7 @@ public class RecordMakers {
                 return count;
             }
 
+            //BinlogReader 时使用
             @Override
             public int delete(SourceInfo source, Object[] row, int rowNumber, int numberOfRows, BitSet includedColumns, Instant ts,
                               BlockingConsumer<SourceRecord> consumer)
